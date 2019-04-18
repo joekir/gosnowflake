@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	jcrypto "github.com/SermoDigital/jose/crypto"
-	"github.com/SermoDigital/jose/jws"
 	"github.com/google/uuid"
+	jose "gopkg.in/square/go-jose.v2"
+	jwt "gopkg.in/square/go-jose.v2/jwt"
 
 	"crypto/sha256"
 	"crypto/x509"
@@ -225,11 +225,11 @@ func authenticate(
 	case authenticatorJWT:
 		requestMain.Authenticator = authenticatorJWT
 
-		jwtTokenInBytes, err := prepareJWTToken(sc.cfg)
+		jwtToken, err := prepareJWTToken(sc.cfg)
 		if err != nil {
 			return nil, err
 		}
-		requestMain.Token = string(jwtTokenInBytes)
+		requestMain.Token = jwtToken
 
 	case authenticatorSnowflake:
 		fallthrough
@@ -300,30 +300,30 @@ func authenticate(
 }
 
 // Generate a JWT token in byte slice given the configuration
-func prepareJWTToken(config *Config) (tokenInBytes []byte, err error) {
-	claims := jws.Claims{}
-
+func prepareJWTToken(config *Config) (token string, err error) {
 	pubBytes, err := x509.MarshalPKIXPublicKey(config.PrivateKey.Public())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	hash := sha256.Sum256(pubBytes)
 
 	accountName := strings.ToUpper(config.Account)
 	userName := strings.ToUpper(config.User)
+	hash := sha256.Sum256(pubBytes)
 
-	claims.SetIssuer(fmt.Sprintf("%s.%s.%s", accountName, userName,
-		"SHA256:"+base64.StdEncoding.EncodeToString(hash[:])))
-	claims.SetSubject(fmt.Sprintf("%s.%s", accountName, userName))
-	claims.SetIssuedAt(time.Now().UTC())
-	claims.SetExpiration(time.Now().UTC().Add(config.JWTExpireTimeout))
-
-	jwt := jws.NewJWT(claims, jcrypto.SigningMethodRS256)
-
-	tokenInBytes, err = jwt.Serialize(config.PrivateKey)
-
-	if err != nil {
-		return nil, err
+	claims := jwt.Claims{
+		Issuer:   fmt.Sprintf("%s.%s.%s", accountName, userName, "SHA256:"+base64.StdEncoding.EncodeToString(hash[:])),
+		Subject:  fmt.Sprintf("%s.%s", accountName, userName),
+		IssuedAt: jwt.NewNumericDate(time.Now().UTC()),
+		Expiry:   jwt.NewNumericDate(time.Now().UTC().Add(config.JWTExpireTimeout)),
 	}
-	return tokenInBytes, err
+
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: config.PrivateKey},
+		(&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return "", err
+	}
+
+	raw, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
+	return raw, err
 }
